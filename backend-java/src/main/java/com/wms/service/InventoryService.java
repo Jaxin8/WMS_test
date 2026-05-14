@@ -24,6 +24,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
@@ -66,22 +67,70 @@ public class InventoryService {
     private final WarehouseRepository warehouseRepository;
 
     /**
-     * 入库单创建 — 候选人实现
+     * 入库单创建 — 重构版
      */
-    @Transactional
-    public Object createInboundOrder(InboundOrderCreateRequest request) {
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public InboundOrderResponse createInboundOrder(InboundOrderCreateRequest request) {
         // 1. 校验所有明细项
         validateItems(request.getItems());
 
         // 2. 创建入库单主表
         InboundOrder savedOrder = createInboundOrderEntity(request.getSupplierName());
 
-        // 3. 处理每个入库明细
-        for (InboundItemRequest item : request.getItems()) {
-            processInboundItem(savedOrder.getId(), item);
-        }
+        // 3. 批量处理入库明细
+        processInboundItemsBatch(savedOrder.getId(), request.getItems());
 
-        return savedOrder;
+        // 4. 返回完整响应
+        return convertToInboundOrderResponse(savedOrder);
+    }
+
+    /**
+     * 批量处理入库明细（解决 N+1 性能问题）
+     */
+    private void processInboundItemsBatch(Long orderId, List<InboundItemRequest> items) {
+        // 3.1 构建明细对象列表
+        List<InboundOrderItem> orderItems = items.stream()
+                .map(item -> InboundOrderItem.builder()
+                        .orderId(orderId)
+                        .productId(item.getProductId())
+                        .quantity(item.getQuantity())
+                        .locationCode(item.getLocationCode())
+                        .build())
+                .collect(Collectors.toList());
+
+        // 3.2 批量保存明细
+        inboundOrderItemRepository.saveAll(orderItems);
+
+        // 3.3 批量更新库存（使用原子操作解决并发问题）
+        for (InboundItemRequest item : items) {
+            updateOrCreateInventoryAtomic(item.getProductId(), item.getLocationCode(), item.getQuantity());
+        }
+    }
+
+    /**
+     * 原子性更新或创建库存
+     */
+    private void updateOrCreateInventoryAtomic(Long productId, String locationCode, Integer quantity) {
+        // 尝试原子累加
+        int updated = inventoryRepository.addQuantity(productId, locationCode, quantity);
+
+        if (updated == 0) {
+            // 如果累加失败（记录不存在），则创建新记录
+            // 注意：在高并发下这里可能抛出唯一索引冲突异常，需根据业务需求决定是否重试
+            Inventory newInventory = Inventory.builder()
+                    .productId(productId)
+                    .locationCode(locationCode)
+                    .quantity(quantity)
+                    .build();
+
+            try {
+                inventoryRepository.save(newInventory);
+            } catch (Exception e) {
+                // 简单的冲突处理：如果创建失败，再次尝试累加（假设是并发插入导致）
+                log.warn("库存创建冲突，尝试重新累加: productId={}", productId);
+                inventoryRepository.addQuantity(productId, locationCode, quantity);
+            }
+        }
     }
 
 
@@ -134,47 +183,6 @@ public class InventoryService {
         return inboundOrderRepository.save(order);
     }
 
-    /**
-     * 处理单个入库明细项
-     */
-    private void processInboundItem(Long orderId, InboundItemRequest item) {
-        // 保存入库单明细
-        InboundOrderItem orderItem = InboundOrderItem.builder()
-                .orderId(orderId)
-                .productId(item.getProductId())
-                .quantity(item.getQuantity())
-                .locationCode(item.getLocationCode())
-                .build();
-
-        inboundOrderItemRepository.save(orderItem);
-
-        // 更新或创建库存
-        updateOrCreateInventory(item.getProductId(), item.getLocationCode(), item.getQuantity());
-    }
-
-    /**
-     * 更新或创建库存记录
-     */
-    private void updateOrCreateInventory(Long productId, String locationCode, Integer quantity) {
-        inventoryRepository.findByProductIdAndLocationCode(productId, locationCode)
-                .ifPresentOrElse(
-                        inventory -> {
-                            // 库存存在-更新库存
-                            inventory.setQuantity(inventory.getQuantity() + quantity);
-                            inventoryRepository.save(inventory);
-                        },
-                        () -> {
-                            // 库存不存在-更新库存
-                            Inventory newInventory = Inventory.builder()
-                                    .productId(productId)
-                                    .locationCode(locationCode)
-                                    .quantity(quantity)
-                                    .build();
-                            inventoryRepository.save(newInventory);
-                        }
-                );
-    }
-
 
     /**
      * 生成入库单号
@@ -200,31 +208,6 @@ public class InventoryService {
         return String.format("IN-%s-%03d", dateStr, sequence);
     }
 
-    // 转换
-    private InventoryResponse convertToInventoryResponse(Inventory inventory) {
-        Product product = productRepository.findById(inventory.getProductId())
-                .orElseThrow(() -> new EntityNotFoundException(
-                        "商品不存在: ID=" + inventory.getProductId()));
-
-        Location location = locationRepository.findByCode(inventory.getLocationCode())
-                .orElseThrow(() -> new EntityNotFoundException(
-                        "库位不存在: " + inventory.getLocationCode()));
-
-        Warehouse warehouse = warehouseRepository.findById(location.getWarehouseId())
-                .orElseThrow(() -> new EntityNotFoundException(
-                        "仓库不存在: ID=" + location.getWarehouseId()));
-
-        return InventoryResponse.builder()
-                .productId(product.getId())
-                .productName(product.getName())
-                .sku(product.getSku())
-                .locationCode(inventory.getLocationCode())
-                .warehouseId(String.valueOf(location.getWarehouseId()))
-                .warehouseName(warehouse.getName())
-                .quantity(inventory.getQuantity())
-                .updatedAt(inventory.getUpdatedAt())
-                .build();
-    }
 
     private InboundOrderResponse convertToInboundOrderResponse(InboundOrder order) {
         List<InboundOrderItem> items = inboundOrderItemRepository.findByOrderId(order.getId());
@@ -258,20 +241,4 @@ public class InventoryService {
                 .build();
     }
 
-    private boolean filterByKeyword(InventoryResponse response, String keyword) {
-        if (keyword == null || keyword.isEmpty()) {
-            return true;
-        }
-        String lowerKeyword = keyword.toLowerCase();
-        return response.getProductName().toLowerCase().contains(lowerKeyword) ||
-                response.getSku().toLowerCase().contains(lowerKeyword);
-    }
-
-    private boolean filterByWarehouse(InventoryResponse response, Long warehouseId) {
-        if (warehouseId == null) {
-            return true;
-        }
-        return response.getWarehouseId() != null &&
-                response.getWarehouseId().contains(warehouseId.toString());
-    }
 }
