@@ -70,61 +70,15 @@ public class InventoryService {
      */
     @Transactional
     public Object createInboundOrder(InboundOrderCreateRequest request) {
-        // TODOEND: 候选人实现
-        //生成入库单号（格式 IN-YYYYMMDD-XXX）
-        String orderNo = generateOrderNo();
+        // 1. 校验所有明细项
+        validateItems(request.getItems());
 
-        //构建入库单
-        InboundOrder order = InboundOrder.builder()
-                .orderNo(orderNo)
-                .supplierName(request.getSupplierName())
-                .status("PENDING")
-                .build();
+        // 2. 创建入库单主表
+        InboundOrder savedOrder = createInboundOrderEntity(request.getSupplierName());
 
-        //保存入库单
-        InboundOrder savedOrder = inboundOrderRepository.save(order);
-
+        // 3. 处理每个入库明细
         for (InboundItemRequest item : request.getItems()) {
-            //校验商品是否存在
-            if (!productRepository.existsById(item.getProductId())) {
-                throw new EntityNotFoundException("商品不存在: ID=" + item.getProductId());
-            }
-
-            //校验库位是否存在
-            if (!locationRepository.existsByCode(item.getLocationCode())) {
-                throw new EntityNotFoundException("库位不存在: " + item.getLocationCode());
-            }
-
-            //构建入库单明细 - 关联数据
-            InboundOrderItem orderItem = InboundOrderItem.builder()
-                    .orderId(savedOrder.getId())
-                    .productId(item.getProductId())
-                    .quantity(item.getQuantity())
-                    .locationCode(item.getLocationCode())
-                    .build();
-
-            //保存入库单明细 - 关联数据
-            inboundOrderItemRepository.save(orderItem);
-
-            // 更新或创建库存记录
-            inventoryRepository.findByProductIdAndLocationCode(
-                            item.getProductId(), item.getLocationCode())
-                    .ifPresentOrElse(
-                            inventory -> {
-                                // 库存已存在，累加数量
-                                inventory.setQuantity(inventory.getQuantity() + item.getQuantity());
-                                inventoryRepository.save(inventory);
-                            },
-                            () -> {
-                                // 库存不存在，创建新记录
-                                Inventory newInventory = Inventory.builder()
-                                        .productId(item.getProductId())
-                                        .locationCode(item.getLocationCode())
-                                        .quantity(item.getQuantity())
-                                        .build();
-                                inventoryRepository.save(newInventory);
-                            }
-                    );
+            processInboundItem(savedOrder.getId(), item);
         }
 
         return savedOrder;
@@ -139,12 +93,6 @@ public class InventoryService {
         // TODO: 候选人实现
 //        throw new UnsupportedOperationException("请实现库存查询功能（任务2）");
         Pageable pageable = PageRequest.of(page - 1, pageSize);
-
-//        return inventoryRepository.findAll(pageable).getContent().stream()
-//                .map(this::convertToInventoryResponse)
-//                .filter(response -> filterByKeyword(response, keyword))
-//                .filter(response -> filterByWarehouse(response, warehouseId))
-//                .collect(Collectors.toList());
         return inventoryRepository.searchWithFilters(keyword, warehouseId, pageable);
     }
 
@@ -154,6 +102,77 @@ public class InventoryService {
         Page<InboundOrder> orderPage = inboundOrderRepository.search(keyword, status, pageable);
 
         return orderPage.map(this::convertToInboundOrderResponse);
+    }
+
+    /**
+     * 校验入库明细中的商品和库位是否存在
+     */
+    private void validateItems(List<InboundItemRequest> items) {
+        for (InboundItemRequest item : items) {
+            if (!productRepository.existsById(item.getProductId())) {
+                throw new EntityNotFoundException("商品不存在: ID=" + item.getProductId());
+            }
+
+            if (!locationRepository.existsByCode(item.getLocationCode())) {
+                throw new EntityNotFoundException("库位不存在: " + item.getLocationCode());
+            }
+        }
+    }
+
+    /**
+     * 创建入库单主表记录
+     */
+    private InboundOrder createInboundOrderEntity(String supplierName) {
+        String orderNo = generateOrderNo();
+
+        InboundOrder order = InboundOrder.builder()
+                .orderNo(orderNo)
+                .supplierName(supplierName)
+                .status("PENDING")
+                .build();
+
+        return inboundOrderRepository.save(order);
+    }
+
+    /**
+     * 处理单个入库明细项
+     */
+    private void processInboundItem(Long orderId, InboundItemRequest item) {
+        // 保存入库单明细
+        InboundOrderItem orderItem = InboundOrderItem.builder()
+                .orderId(orderId)
+                .productId(item.getProductId())
+                .quantity(item.getQuantity())
+                .locationCode(item.getLocationCode())
+                .build();
+
+        inboundOrderItemRepository.save(orderItem);
+
+        // 更新或创建库存
+        updateOrCreateInventory(item.getProductId(), item.getLocationCode(), item.getQuantity());
+    }
+
+    /**
+     * 更新或创建库存记录
+     */
+    private void updateOrCreateInventory(Long productId, String locationCode, Integer quantity) {
+        inventoryRepository.findByProductIdAndLocationCode(productId, locationCode)
+                .ifPresentOrElse(
+                        inventory -> {
+                            // 库存存在-更新库存
+                            inventory.setQuantity(inventory.getQuantity() + quantity);
+                            inventoryRepository.save(inventory);
+                        },
+                        () -> {
+                            // 库存不存在-更新库存
+                            Inventory newInventory = Inventory.builder()
+                                    .productId(productId)
+                                    .locationCode(locationCode)
+                                    .quantity(quantity)
+                                    .build();
+                            inventoryRepository.save(newInventory);
+                        }
+                );
     }
 
 
@@ -181,6 +200,7 @@ public class InventoryService {
         return String.format("IN-%s-%03d", dateStr, sequence);
     }
 
+    // 转换
     private InventoryResponse convertToInventoryResponse(Inventory inventory) {
         Product product = productRepository.findById(inventory.getProductId())
                 .orElseThrow(() -> new EntityNotFoundException(
