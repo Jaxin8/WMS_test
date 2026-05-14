@@ -39,11 +39,11 @@
         </dependency>
 
         <!-- H2 内存数据库（开发阶段，可随时切换 MySQL） -->
-        <dependency>
-            <groupId>com.h2database</groupId>
-            <artifactId>h2</artifactId>
-            <scope>runtime</scope>
-        </dependency>
+<!--        <dependency>-->
+<!--            <groupId>com.h2database</groupId>-->
+<!--            <artifactId>h2</artifactId>-->
+<!--            <scope>runtime</scope>-->
+<!--        </dependency>-->
 
         <!-- MySQL 驱动（如需切换，取消注释） -->
 
@@ -52,7 +52,6 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
-
 
         <!-- Lombok -->
         <dependency>
