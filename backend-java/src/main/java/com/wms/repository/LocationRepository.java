@@ -11,6 +11,5 @@ import java.util.Optional;
 public interface LocationRepository extends JpaRepository<Location, Long> {
     List<Location> findByWarehouseId(Long warehouseId);
     boolean existsByCode(String code);
-    Optional<Location> findByCode(String code);
 }
 

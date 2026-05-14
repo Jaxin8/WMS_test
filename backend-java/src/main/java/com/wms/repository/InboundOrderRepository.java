@@ -14,8 +14,6 @@ import java.util.Optional;
 @Repository
 public interface InboundOrderRepository extends JpaRepository<InboundOrder, Long> {
 
-    Optional<InboundOrder> findByOrderNo(String orderNo);
-
     @Query("SELECT COUNT(io) FROM InboundOrder io WHERE io.createdAt >= :startTime AND io.createdAt < :endTime")
     long countByCreatedAtBetween(@Param("startTime") LocalDateTime startTime, 
                                   @Param("endTime") LocalDateTime endTime);

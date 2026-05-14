@@ -8,9 +8,7 @@ import com.wms.dto.InventoryResponse;
 import com.wms.entity.InboundOrder;
 import com.wms.entity.InboundOrderItem;
 import com.wms.entity.Inventory;
-import com.wms.entity.Location;
 import com.wms.entity.Product;
-import com.wms.entity.Warehouse;
 import com.wms.repository.InboundOrderItemRepository;
 import com.wms.repository.InboundOrderRepository;
 import com.wms.repository.InventoryRepository;
@@ -139,7 +137,7 @@ public class InventoryService {
      */
     public Page<InventoryResponse> queryInventory(String keyword, Long warehouseId,
                                                    int page, int pageSize) {
-        // TODO: 候选人实现
+        // TODOEND: 候选人实现
 //        throw new UnsupportedOperationException("请实现库存查询功能（任务2）");
         Pageable pageable = PageRequest.of(page - 1, pageSize);
         return inventoryRepository.searchWithFilters(keyword, warehouseId, pageable);
